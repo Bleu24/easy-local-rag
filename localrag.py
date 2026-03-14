@@ -1,9 +1,10 @@
 import torch
 import ollama
 import os
-from openai import OpenAI
+from google import genai
 import argparse
 import json
+from dotenv import load_dotenv
 
 # ANSI escape codes for colors
 PINK = '\033[95m'
@@ -12,13 +13,15 @@ YELLOW = '\033[93m'
 NEON_GREEN = '\033[92m'
 RESET_COLOR = '\033[0m'
 
+load_dotenv()
+
 # Function to open a file and return its contents as a string
 def open_file(filepath):
     with open(filepath, 'r', encoding='utf-8') as infile:
         return infile.read()
 
 # Function to get relevant context from the vault based on user input
-def get_relevant_context(rewritten_input, vault_embeddings, vault_content, top_k=3):
+def get_relevant_context(rewritten_input, vault_embeddings, vault_content, top_k=7):
     if vault_embeddings.nelement() == 0:  # Check if the tensor has any elements
         return []
     # Encode the rewritten input
@@ -53,16 +56,14 @@ def rewrite_query(user_input_json, conversation_history, ollama_model):
     
     Rewritten query: 
     """
-    response = client.chat.completions.create(
+    response = client.models.generate_content(
         model=ollama_model,
-        messages=[{"role": "system", "content": prompt}],
-        max_tokens=200,
-        n=1,
-        temperature=0.1,
+        contents=prompt,
+        config={"max_output_tokens": 200, "temperature": 0.1}
     )
-    rewritten_query = response.choices[0].message.content.strip()
+    rewritten_query = response.text.strip()
     return json.dumps({"Rewritten Query": rewritten_query})
-   
+
 def ollama_chat(user_input, system_message, vault_embeddings, vault_content, ollama_model, conversation_history):
     conversation_history.append({"role": "user", "content": user_input})
     
@@ -92,33 +93,29 @@ def ollama_chat(user_input, system_message, vault_embeddings, vault_content, oll
     
     conversation_history[-1]["content"] = user_input_with_context
     
-    messages = [
-        {"role": "system", "content": system_message},
-        *conversation_history
-    ]
+    # Flatten conversation history into a single string for Gemini
+    formatted_messages = system_message + "\n\n"
+    formatted_messages += "\n".join([f"{m['role']}: {m['content']}" for m in conversation_history])
     
-    response = client.chat.completions.create(
+    response = client.models.generate_content(
         model=ollama_model,
-        messages=messages,
-        max_tokens=2000,
+        contents=formatted_messages,
+        config={"max_output_tokens": 2000}
     )
     
-    conversation_history.append({"role": "assistant", "content": response.choices[0].message.content})
+    conversation_history.append({"role": "assistant", "content": response.text})
     
-    return response.choices[0].message.content
+    return response.text
 
 # Parse command-line arguments
 print(NEON_GREEN + "Parsing command-line arguments..." + RESET_COLOR)
 parser = argparse.ArgumentParser(description="Ollama Chat")
-parser.add_argument("--model", default="llama3", help="Ollama model to use (default: llama3)")
+parser.add_argument("--model", default="gemini-3-flash-preview", help="Gemini model to use (default: gemini-2.0-flash)")
 args = parser.parse_args()
 
-# Configuration for the Ollama API client
-print(NEON_GREEN + "Initializing Ollama API client..." + RESET_COLOR)
-client = OpenAI(
-    base_url='http://localhost:11434/v1',
-    api_key='llama3'
-)
+# Configuration for the Gemini API client
+print(NEON_GREEN + "Initializing Gemini API client..." + RESET_COLOR)
+client = genai.Client()
 
 # Load the vault content
 print(NEON_GREEN + "Loading vault content..." + RESET_COLOR)
@@ -143,7 +140,7 @@ print(vault_embeddings_tensor)
 # Conversation loop
 print("Starting conversation loop...")
 conversation_history = []
-system_message = "You are a helpful assistant that is an expert at extracting the most useful information from a given text. Also bring in extra relevant infromation to the user query from outside the given context."
+system_message = "You are a helpful assistant that is an expert at extracting the most useful information from a given text. Also bring in extra relevant information to the user query from outside the given context."
 
 while True:
     user_input = input(YELLOW + "Ask a query about your documents (or type 'quit' to exit): " + RESET_COLOR)
